@@ -6,18 +6,68 @@
 //! - Chinese/Japanese/Korean input support
 //!
 //! Click on an input box to focus it, then type with your IME.
+//!
+//! Font requirements:
+//! - For CJK (Chinese/Japanese/Korean) input: install a CJK font such as
+//!   NotoSansCJK (Linux), Microsoft YaHei (Windows), or PingFang (macOS).
+//! - A Latin fallback font (DejaVu Sans, Liberation Sans, etc.) will be used
+//!   automatically if no CJK font is found, allowing the example to run but
+//!   without CJK glyph support.
 
 use fontdue::{Font, FontSettings};
 use miniquad::*;
 use std::collections::HashMap;
 use std::io::Write;
 
-// Use Windows system font for Chinese support
+/// Ordered list of font paths to try on each platform.
+/// CJK-capable fonts are listed first; Latin-only fallbacks are listed last
+/// so the example can at least run without crashing when no CJK font is found.
 #[cfg(target_os = "windows")]
-const FONT_PATH: &str = "C:\\Windows\\Fonts\\msyh.ttc"; // Microsoft YaHei
+const FONT_PATHS: &[&str] = &[
+    "C:\\Windows\\Fonts\\msyh.ttc",      // Microsoft YaHei (CJK)
+    "C:\\Windows\\Fonts\\meiryo.ttc",    // Meiryo (CJK, Japanese)
+    "C:\\Windows\\Fonts\\simsun.ttc",    // SimSun (CJK, Chinese)
+    "C:\\Windows\\Fonts\\arial.ttf",     // Arial (Latin fallback)
+];
 
-#[cfg(not(target_os = "windows"))]
-const FONT_PATH: &str = "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc";
+#[cfg(target_os = "macos")]
+const FONT_PATHS: &[&str] = &[
+    "/System/Library/Fonts/PingFang.ttc",                        // PingFang (CJK)
+    "/Library/Fonts/Arial Unicode MS.ttf",                       // Arial Unicode (CJK)
+    "/System/Library/Fonts/Helvetica.ttc",                       // Helvetica (Latin fallback)
+    "/System/Library/Fonts/Geneva.ttf",                          // Geneva (Latin fallback)
+];
+
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
+const FONT_PATHS: &[&str] = &[
+    // NotoSansCJK paths vary by Linux distribution
+    "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",   // Debian/Ubuntu
+    "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",   // Debian/Ubuntu (OTF)
+    "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",        // Fedora/RHEL
+    "/usr/share/fonts/google-noto-cjk/NotoSansCJK-Regular.ttc", // Some distros
+    "/usr/share/fonts/noto/NotoSansCJK-Regular.ttc",             // openSUSE
+    // WenQuanYi is another common CJK font on Linux
+    "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",           // Debian/Ubuntu
+    "/usr/share/fonts/wqy-microhei/wqy-microhei.ttc",           // Fedora/RHEL
+    // Latin-only fallbacks so the example can still run without CJK support
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",           // Debian/Ubuntu
+    "/usr/share/fonts/dejavu-sans-fonts/DejaVuSans.ttf",         // Fedora/RHEL
+    "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+    "/usr/share/fonts/liberation-sans/LiberationSans-Regular.ttf",
+    "/usr/share/fonts/truetype/freefont/FreeSans.ttf",
+];
+
+/// Try to load font data from the platform-specific list of candidate paths.
+/// Returns the font bytes and the path that succeeded, or `None` if no font
+/// could be found.
+fn find_and_load_font() -> Option<(Vec<u8>, &'static str)> {
+    for path in FONT_PATHS {
+        if let Ok(data) = std::fs::read(path) {
+            return Some((data, path));
+        }
+    }
+    None
+}
 
 // ============================================================================
 // Text Renderer using fontdue
@@ -45,7 +95,20 @@ struct TextRenderer {
 
 impl TextRenderer {
     fn new(ctx: &mut Box<dyn RenderingBackend>, font_size: f32) -> Self {
-        let font_data = std::fs::read(FONT_PATH).expect("Failed to load font file");
+        let (font_data, font_path) = find_and_load_font().unwrap_or_else(|| {
+            eprintln!("Error: No font file found. Tried the following paths:");
+            for path in FONT_PATHS {
+                eprintln!("  {}", path);
+            }
+            #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+            eprintln!("Please install a font (e.g. `sudo apt install fonts-noto-cjk` on Debian/Ubuntu) and retry.");
+            #[cfg(target_os = "macos")]
+            eprintln!("Please ensure a system font is available (PingFang is bundled with macOS).");
+            #[cfg(target_os = "windows")]
+            eprintln!("Please ensure a system font is available (Microsoft YaHei is bundled with Windows).");
+            std::process::exit(1);
+        });
+        eprintln!("Using font: {}", font_path);
         let font = Font::from_bytes(font_data.as_slice(), FontSettings::default())
             .expect("Failed to parse font");
         
