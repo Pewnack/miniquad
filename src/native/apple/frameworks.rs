@@ -231,6 +231,38 @@ pub const kCGBitmapByteOrderDefault: u32 = 0 << 12;
 pub const kCGImageAlphaLast: u32 = 3;
 pub const kCGRenderingIntentDefault: u32 = 0;
 
+//
+// Core Video
+//
+
+pub type CVDisplayLinkRef = *mut c_void;
+pub type CVOptionFlags = u64;
+pub type CVReturn = i32;
+
+pub const KCV_RETURN_SUCCESS: CVReturn = 0;
+
+pub type CVDisplayLinkOutputCallback = unsafe extern "C" fn(
+    display_link: CVDisplayLinkRef,
+    now: *const c_void,
+    output_time: *const c_void,
+    flags_in: CVOptionFlags,
+    flags_out: *mut CVOptionFlags,
+    display_link_context: *mut c_void,
+) -> CVReturn;
+
+#[link(name = "CoreVideo", kind = "framework")]
+extern "C" {
+    pub fn CVDisplayLinkCreateWithActiveCGDisplays(display_link_out: *mut CVDisplayLinkRef) -> CVReturn;
+    pub fn CVDisplayLinkSetOutputCallback(
+        display_link: CVDisplayLinkRef,
+        callback: CVDisplayLinkOutputCallback,
+        user_info: *mut c_void,
+    ) -> CVReturn;
+    pub fn CVDisplayLinkStart(display_link: CVDisplayLinkRef) -> CVReturn;
+    pub fn CVDisplayLinkStop(display_link: CVDisplayLinkRef) -> CVReturn;
+    pub fn CVDisplayLinkRelease(display_link: CVDisplayLinkRef);
+}
+
 #[link(name = "Metal", kind = "framework")]
 extern "C" {
     pub fn MTLCreateSystemDefaultDevice() -> ObjcId;

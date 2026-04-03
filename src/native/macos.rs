@@ -894,6 +894,75 @@ pub fn define_opengl_view_class() -> *const Class {
     decl.register()
 }
 
+unsafe extern "C" fn opengl_display_link_callback(
+    _display_link: CVDisplayLinkRef,
+    _now: *const c_void,
+    _output_time: *const c_void,
+    _flags_in: CVOptionFlags,
+    _flags_out: *mut CVOptionFlags,
+    display_link_context: *mut c_void,
+) -> CVReturn {
+    if display_link_context.is_null() {
+        return KCV_RETURN_SUCCESS;
+    }
+
+    let view = display_link_context as ObjcId;
+    msg_send_![
+        view,
+        performSelectorOnMainThread: sel!(setNeedsDisplayHack)
+        withObject: nil
+        waitUntilDone: NO
+    ];
+
+    KCV_RETURN_SUCCESS
+}
+
+unsafe fn start_opengl_display_link(view: ObjcId) -> (CVDisplayLinkRef, ObjcId) {
+    if view == nil {
+        return (std::ptr::null_mut(), nil);
+    }
+
+    let retained_view: ObjcId = msg_send![view, retain];
+
+    let mut display_link: CVDisplayLinkRef = std::ptr::null_mut();
+    if CVDisplayLinkCreateWithActiveCGDisplays(&mut display_link) != KCV_RETURN_SUCCESS {
+        let () = msg_send![retained_view, release];
+        eprintln!("Failed to create CVDisplayLink, falling back to no OpenGL frame scheduler");
+        return (std::ptr::null_mut(), nil);
+    }
+
+    if CVDisplayLinkSetOutputCallback(
+        display_link,
+        opengl_display_link_callback,
+        retained_view as *mut c_void,
+    ) != KCV_RETURN_SUCCESS
+    {
+        CVDisplayLinkRelease(display_link);
+        let () = msg_send![retained_view, release];
+        eprintln!("Failed to configure CVDisplayLink callback");
+        return (std::ptr::null_mut(), nil);
+    }
+
+    if CVDisplayLinkStart(display_link) != KCV_RETURN_SUCCESS {
+        CVDisplayLinkRelease(display_link);
+        let () = msg_send![retained_view, release];
+        eprintln!("Failed to start CVDisplayLink");
+        return (std::ptr::null_mut(), nil);
+    }
+
+    (display_link, retained_view)
+}
+
+unsafe fn stop_opengl_display_link(display_link: CVDisplayLinkRef, retained_view: ObjcId) {
+    if !display_link.is_null() {
+        CVDisplayLinkStop(display_link);
+        CVDisplayLinkRelease(display_link);
+    }
+    if retained_view != nil {
+        let () = msg_send![retained_view, release];
+    }
+}
+
 pub fn define_metal_view_class() -> *const Class {
     let superclass = class!(MTKView);
     let mut decl = ClassDecl::new("RenderViewClass", superclass).unwrap();
@@ -1286,21 +1355,27 @@ where
 
     let () = msg_send![ns_app, finishLaunching];
 
-    // Found this here: https://github.com/kovidgoyal/kitty/issues/6341#issuecomment-1578348104
-    let current_runloop = msg_send_![class!(NSRunLoop), currentRunLoop];
-    let timer = match conf.platform.apple_gfx_api {
-        AppleGfxApi::OpenGl => msg_send_![class!(NSTimer), timerWithTimeInterval:0.016 // ~60FPS
-                                                           target:view
-                                                           selector:sel!(setNeedsDisplayHack)
-                                                           userInfo:nil
-                                                           repeats:YES],
-        AppleGfxApi::Metal => msg_send_![class!(NSTimer), timerWithTimeInterval:0.016 // ~60FPS
-                                                          target:view
-                                                          selector:sel!(draw)
-                                                          userInfo:nil
-                                                          repeats:YES],
-    };
-    msg_send_![current_runloop, addTimer:timer forMode:NSEventTrackingRunLoopMode];
+    let mut gl_display_link: CVDisplayLinkRef = std::ptr::null_mut();
+    let mut gl_display_link_view: ObjcId = nil;
+
+    match conf.platform.apple_gfx_api {
+        AppleGfxApi::OpenGl => {
+            (gl_display_link, gl_display_link_view) = start_opengl_display_link(view);
+        }
+        AppleGfxApi::Metal => {
+            // Found this here: https://github.com/kovidgoyal/kitty/issues/6341#issuecomment-1578348104
+
+            // Little hack to make sure screen is also redrawn during resize
+
+            let timer: ObjcId = msg_send_![class!(NSTimer), timerWithTimeInterval:0.016 // ~60FPS
+                                                            target:view
+                                                            selector:sel!(draw)
+                                                            userInfo:nil
+                                                            repeats:YES];
+            let current_runloop = msg_send_![class!(NSRunLoop), currentRunLoop];
+            msg_send_![current_runloop, addTimer:timer forMode:NSEventTrackingRunLoopMode];
+        }
+    }
 
     // Basically reimplementing msg_send![ns_app, run] here
     let distant_future: ObjcId = msg_send![class!(NSDate), distantFuture];
@@ -1333,8 +1408,17 @@ where
             }
         }
 
-        if !conf.platform.blocking_event_loop || display.update_requested {
+        let should_render_in_main_loop = match conf.platform.apple_gfx_api {
+            AppleGfxApi::OpenGl => false,
+            AppleGfxApi::Metal => !conf.platform.blocking_event_loop || display.update_requested,
+        };
+
+        if should_render_in_main_loop {
             perform_redraw(&mut display, conf.platform.apple_gfx_api, false);
         }
+    }
+
+    if conf.platform.apple_gfx_api == AppleGfxApi::OpenGl {
+        stop_opengl_display_link(gl_display_link, gl_display_link_view);
     }
 }
